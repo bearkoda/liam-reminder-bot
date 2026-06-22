@@ -1,9 +1,9 @@
+import os
 import discord
 from discord.ext import commands
 import asyncio
 import random
-
-import os
+import time
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -15,6 +15,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 active_chores = {}
 
 
+def format_duration(seconds):
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "less than 1 minute"
+    if minutes == 1:
+        return "1 minute"
+    return f"{minutes} minutes"
+
+
 class ChoreView(discord.ui.View):
     def __init__(self, chore_id):
         super().__init__(timeout=None)
@@ -22,23 +31,62 @@ class ChoreView(discord.ui.View):
 
     @discord.ui.button(label="Done", style=discord.ButtonStyle.success, emoji="✅")
     async def done_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.chore_id in active_chores:
-            active_chores[self.chore_id]["done"] = True
+        chore = active_chores.get(self.chore_id)
 
-        await interaction.response.send_message(
-            "Marked done. Peace has been restored. ✅",
-            ephemeral=True
-        )
+        if chore:
+            chore["done"] = True
+            elapsed = format_duration(time.time() - chore["start_time"])
+
+            await interaction.response.send_message(
+                "Marked done. Peace has been restored. ✅",
+                ephemeral=True
+            )
+
+            requester = chore["requester"]
+            try:
+                await requester.send(
+                    f"🎉 **Chore completed!**\n\n"
+                    f"**Person:** {chore['user'].mention}\n"
+                    f"**Task:** {chore['task']}\n"
+                    f"**Reminders sent:** {chore['reminders_sent']}\n"
+                    f"**Completed after:** {elapsed}"
+                )
+            except:
+                pass
+        else:
+            await interaction.response.send_message(
+                "This chore is no longer active.",
+                ephemeral=True
+            )
 
     @discord.ui.button(label="Snooze 15 min", style=discord.ButtonStyle.secondary, emoji="😴")
     async def snooze_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.chore_id in active_chores:
-            active_chores[self.chore_id]["snooze"] = 15 * 60
+        chore = active_chores.get(self.chore_id)
 
-        await interaction.response.send_message(
-            "Snoozed for 15 minutes. Luxury has been granted. 😴",
-            ephemeral=True
-        )
+        if chore:
+            chore["snooze"] = 15 * 60
+
+            await interaction.response.send_message(
+                "Snoozed for 15 minutes. Luxury has been granted. 😴",
+                ephemeral=True
+            )
+
+            requester = chore["requester"]
+            try:
+                await requester.send(
+                    f"😴 **Chore snoozed**\n\n"
+                    f"**Person:** {chore['user'].mention}\n"
+                    f"**Task:** {chore['task']}\n"
+                    f"**Snoozed for:** 15 minutes\n"
+                    f"**Reminders sent so far:** {chore['reminders_sent']}"
+                )
+            except:
+                pass
+        else:
+            await interaction.response.send_message(
+                "This chore is no longer active.",
+                ephemeral=True
+            )
 
 
 def get_reminder_message(task, count):
@@ -98,11 +146,14 @@ async def chore(
 
     active_chores[chore_id] = {
         "user": user,
+        "requester": interaction.user,
         "task": task,
         "minutes": minutes,
         "max_reminders": max_reminders,
         "done": False,
         "snooze": 0,
+        "start_time": time.time(),
+        "reminders_sent": 0,
     }
 
     await interaction.response.send_message(
@@ -111,12 +162,24 @@ async def chore(
         ephemeral=True
     )
 
+    try:
+        await interaction.user.send(
+            f"🕵️ **Chore tracking started**\n\n"
+            f"**Person:** {user.mention}\n"
+            f"**Task:** {task}\n"
+            f"**Reminder interval:** every {minutes} minute(s)\n"
+            f"**Max reminders:** {max_reminders}"
+        )
+    except:
+        pass
+
     asyncio.create_task(reminder_loop(chore_id))
 
 
 async def reminder_loop(chore_id):
     chore_data = active_chores[chore_id]
     user = chore_data["user"]
+    requester = chore_data["requester"]
     task = chore_data["task"]
     minutes = chore_data["minutes"]
     max_reminders = chore_data["max_reminders"]
@@ -138,7 +201,15 @@ async def reminder_loop(chore_id):
                 get_reminder_message(task, count),
                 view=ChoreView(chore_id)
             )
+            chore_data["reminders_sent"] = count
         except:
+            try:
+                await requester.send(
+                    f"⚠️ I couldn't DM {user.mention} about:\n\n**{task}**"
+                )
+            except:
+                pass
+
             active_chores.pop(chore_id, None)
             return
 
@@ -153,9 +224,23 @@ async def reminder_loop(chore_id):
         count += 1
 
     if not chore_data["done"]:
+        elapsed = format_duration(time.time() - chore_data["start_time"])
+
         try:
             await user.send(
                 f"Final reminder reached for: {task}\n\nI am retreating dramatically."
+            )
+        except:
+            pass
+
+        try:
+            await requester.send(
+                f"🚨 **Chore not completed**\n\n"
+                f"**Person:** {user.mention}\n"
+                f"**Task:** {task}\n"
+                f"**Total reminders sent:** {chore_data['reminders_sent']}\n"
+                f"**Time elapsed:** {elapsed}\n\n"
+                f"The bot has done all it can. Godspeed."
             )
         except:
             pass
